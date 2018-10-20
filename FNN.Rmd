@@ -1,0 +1,201 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+To execute the following, you will need to install those packages : 
+
+install.packages(c("readr", "dplyr", "keras"))
+
+If you are using Keras for the first time, further set up may be necessary, as default you can us : 
+
+install_keras()
+
+
+```{r}
+library(keras)
+library(readr)
+library(dplyr)
+```
+
+The project aims at predicting, usiing Deep Learning methods, the phenotypic characteristics of plants given a set of genomic markers. We will use the public Poplar dataset, which has 562 samples with 7808 features and 8 labels. In the following we will only study one label. 
+
+
+For this iteration, we will use a Feed-Forward Neural Network (FNN) as a first model. FNN are among the simplest networks.
+
+Our model will be a 3 layers FNN, with a 8 - 32 - 1 architecture. 
+We will test two cases : 
+    - Normalized input data : binary_FNN
+    FNN : 8 (relu) - 32 (relu) - 1 (sigmoid)
+    Loss function = binary_crossentropy
+    Optimizer = rmsprop
+    
+    - Non-normalized input data : linear_FNN
+    FNN : 8 (relu) - 32 (relu) - 1 (linear)
+    Loss function = MSE (or MSLE if the input values are large)
+    Optimizer = rmsprop
+
+We will then compare the performance of tose two models. 
+    
+1st step : Converting the input and output data 
+
+Input Data : 
+We decided to represent our data as a 2D Tensor :
+    - The 1st axis is the sample axis 
+    - The 2nd axis is the feature axis, is composed of a 7808D vector, each component in {1:16}
+    Each integer in {1:16} represents a given couple of nucleic bases. Ex : "A/A" = 1.
+    
+Output Data : 
+Regarding output data, we chose to consider, for this first iteration, the BS.ORL values. 
+We simply normalized the values of the 562D Vector. 
+
+```{r}
+setwd("/Users/adil/Desktop/OBT/Projet option/Script")
+Data_Geno<- read.csv(file = "Poplar.Geno.csv", header = FALSE, sep = ",", quote = "\"",dec = ".", fill = TRUE, comment.char = "") 
+
+Data_Extract <- as.matrix(Data_Geno[,-1][-1,], rownames.force = TRUE) #On retire également la première colonne et la première ligne qui ne contient pas de valeurs
+
+conv_data = matrix(NA, nrow = dim(Data_Extract)[1], ncol = dim(Data_Extract)[2])
+
+for (i in 1:dim(Data_Extract)[1]){
+  for (j in 1:dim(Data_Extract)[2]){
+    if (Data_Extract[i,j] == "A/A"){
+    conv_data[i,j] = 1
+  }else if (Data_Extract[i,j] == "A/C") {
+    conv_data[i,j] = 2
+  }else if (Data_Extract[i,j] == "A/G") {
+    conv_data[i,j] = 3
+  }else if (Data_Extract[i,j] == "A/T") {
+    conv_data[i,j] = 4
+  }else if (Data_Extract[i,j] == "C/A") {
+    conv_data[i,j] = 5
+  }else if (Data_Extract[i,j] == "C/C") {
+    conv_data[i,j] = 6
+  }else if (Data_Extract[i,j] == "C/G"){
+    conv_data[i,j] = 7
+  }else if (Data_Extract[i,j] == "C/T") {
+    conv_data[i,j] = 8
+  }else if (Data_Extract[i,j] == "G/A") {
+    conv_data[i,j] = 9
+  }else if (Data_Extract[i,j] == "G/C") {
+    conv_data[i,j] = 10
+  }else if (Data_Extract[i,j] == "G/G") {
+    conv_data[i,j] = 11
+  }else if (Data_Extract[i,j] == "G/T") {
+    conv_data[i,j] = 12
+  }else if (Data_Extract[i,j] == "T/A") {
+    conv_data[i,j] = 13
+  }else if (Data_Extract[i,j] == "T/C") {
+    conv_data[i,j] = 14
+  }else if (Data_Extract[i,j] == "T/G") {
+    conv_data[i,j] = 15
+  }else if (Data_Extract[i,j] == "T/T") {
+    conv_data[i,j] = 16
+  }
+ }
+}
+
+
+Data_Pheno <- read.csv(file = "Poplar.Pheno.csv", header = FALSE, sep = ",", quote = "\"",dec = ".", fill = TRUE, comment.char = "") 
+
+Data_Extract_Pheno <- as.matrix(Data_Pheno[-1,][,4], rownames.force = TRUE) #On selectionne la colonne BS.ORL et on enlève le premier terme "bs.orl"
+Data_Extract_Pheno <- as.numeric(Data_Extract_Pheno) #convert string in numeric 
+Data_Extract_Pheno <- (Data_Extract_Pheno - min(Data_Extract_Pheno)) / ( max(Data_Extract_Pheno) - min(Data_Extract_Pheno))
+```
+
+Once the data is extracted, we divided it into a training set, a validation set and a test set. 60% of the data set is used for training, 5% for validation and 35% for testing.
+
+```{r}
+x_train = conv_data[1:352,1:7808]
+y_train = Data_Extract_Pheno[1:352]
+
+x_val = conv_data[353:384,1:7808]
+y_val = Data_Extract_Pheno[353:384]
+  
+x_test = conv_data[385:562,1:7808]
+y_test = Data_Extract_Pheno[385:562]
+```
+
+
+Creation of our binary_FNN network
+
+```{r}
+binary_FNN <- keras_model_sequential() %>%
+  layer_dense(units = 8, activation = "relu", input_shape = c(7808)) %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+
+binary_FNN %>% compile(
+  optimizer = "rmsprop",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+```
+
+Training and validation of binary_FNN
+
+```{r}
+
+binary_history <- binary_FNN %>% fit(
+  x_train,
+  y_train,
+  epochs = 20,
+  batch_size = 32,
+  validation_data = list(x_val, y_val)
+)
+```
+
+Testing binary_FNN
+
+```{r}
+binary_results <- binary_FNN %>% evaluate(x_test, y_test)
+binary_results
+```
+
+Creation of our linear_FNN network
+
+```{r}
+linear_FNN <- keras_model_sequential() %>%
+  layer_dense(units = 8, activation = "relu", input_shape = c(7808)) %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1)
+
+
+linear_FNN %>% compile(
+  optimizer = "rmsprop",
+  loss = "mse",
+  metrics = c("mae")
+)
+```
+
+Training and validation of linear_FNN
+
+```{r}
+
+linear_history <- linear_FNN %>% fit(
+  x_train,
+  y_train,
+  epochs = 20,
+  batch_size = 32,
+  validation_data = list(x_val, y_val))
+  
+```
+
+Testing linear_FNN
+
+```{r}
+linear_results <- linear_FNN %>% evaluate(x_test, y_test)
+linear_prediction <- linear_FNN  %>% predict(x_val)
+
+linear_prediction
+y_test
+
+```
+
+
+

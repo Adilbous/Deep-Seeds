@@ -1,0 +1,170 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+rm(list=ls())
+library(DeepGS)  
+library(mxnet)
+library(readr)
+library(dplyr)
+```
+
+```{r}
+setwd("/Users/adil/documents/GitHub/DeepGS")
+Data_Geno<- read.csv(file = "Poplar.Geno.csv", header = FALSE, sep = ",", quote = "\"",dec = ".", fill = TRUE, comment.char = "") 
+
+Data_Extract <- as.matrix(Data_Geno[,-1][-1,], rownames.force = TRUE) #On retire également la première colonne et la première ligne qui ne contient pas de valeurs
+
+conv_data = matrix(NA, nrow = dim(Data_Extract)[1], ncol = dim(Data_Extract)[2])
+
+for (i in 1:dim(Data_Extract)[1]){
+  for (j in 1:dim(Data_Extract)[2]){
+    if (Data_Extract[i,j] == "A/A"){
+    conv_data[i,j] = 1
+  }else if (Data_Extract[i,j] == "A/C") {
+    conv_data[i,j] = 2
+  }else if (Data_Extract[i,j] == "A/G") {
+    conv_data[i,j] = 3
+  }else if (Data_Extract[i,j] == "A/T") {
+    conv_data[i,j] = 4
+  }else if (Data_Extract[i,j] == "C/A") {
+    conv_data[i,j] = 5
+  }else if (Data_Extract[i,j] == "C/C") {
+    conv_data[i,j] = 6
+  }else if (Data_Extract[i,j] == "C/G"){
+    conv_data[i,j] = 7
+  }else if (Data_Extract[i,j] == "C/T") {
+    conv_data[i,j] = 8
+  }else if (Data_Extract[i,j] == "G/A") {
+    conv_data[i,j] = 9
+  }else if (Data_Extract[i,j] == "G/C") {
+    conv_data[i,j] = 10
+  }else if (Data_Extract[i,j] == "G/G") {
+    conv_data[i,j] = 11
+  }else if (Data_Extract[i,j] == "G/T") {
+    conv_data[i,j] = 12
+  }else if (Data_Extract[i,j] == "T/A") {
+    conv_data[i,j] = 13
+  }else if (Data_Extract[i,j] == "T/C") {
+    conv_data[i,j] = 14
+  }else if (Data_Extract[i,j] == "T/G") {
+    conv_data[i,j] = 15
+  }else if (Data_Extract[i,j] == "T/T") {
+    conv_data[i,j] = 16
+  }
+ }
+}
+
+
+Data_Pheno <- read.csv(file = "Poplar.Pheno.csv", header = FALSE, sep = ",", quote = "\"",dec = ".", fill = TRUE, comment.char = "") 
+
+Data_Extract_Pheno <- as.matrix(Data_Pheno[-1,][,2], rownames.force = TRUE) #On selectionne la colonne BS.ORL et on enlève le premier terme "bs.orl"
+
+
+
+conv_data_pheno = matrix(NA, nrow = dim(Data_Extract_Pheno)[1], ncol = dim(Data_Extract_Pheno)[2])
+
+
+for (i in 1:dim(Data_Extract_Pheno)[1]){
+  for (j in 1:dim(Data_Extract_Pheno)[2]){
+    conv_data_pheno[i][j] = as.numeric(Data_Extract_Pheno[i][j])
+  }
+}
+
+# Standardisation des données
+
+mean <- apply(conv_data_pheno, 2, mean)
+std <- apply(conv_data_pheno, 2, sd)
+conv_data_pheno <- scale(conv_data_pheno, center = mean, scale = std)
+```
+
+```{r}
+x_train = conv_data[1:352,1:7808]
+y_train = conv_data_pheno[1:352]
+
+x_val = conv_data[353:384,1:7808]
+y_val = conv_data_pheno[353:384]
+  
+x_test = conv_data[385:562,1:7808]
+y_test = conv_data_pheno[385:562]
+```
+
+
+```{r}
+
+Markers <- conv_data
+y <- conv_data_pheno
+cvSampleList <- cvSampleIndex(length(y),10,1)
+# cross validation set
+cvIdx <- 1
+trainIdx <- cvSampleList[[cvIdx]]$trainIdx
+testIdx <- cvSampleList[[cvIdx]]$testIdx
+trainMat <- Markers[trainIdx,]
+trainPheno <- y[trainIdx]
+validIdx <- sample(1:length(trainIdx),floor(length(trainIdx)*0.1))
+validMat <- trainMat[validIdx,]
+validPheno <- trainPheno[validIdx]
+trainMat <- trainMat[-validIdx,]
+trainPheno <- trainPheno[-validIdx]
+conv_kernel <- c("1*18") ## convolution kernels (fileter shape)
+conv_stride <- c("1*1")
+conv_num_filter <- c(8)  ## number of filters
+pool_act_type <- c("relu") ## active function for next pool
+pool_type <- c("max") ## max pooling shape
+pool_kernel <- c("1*4") ## pooling shape
+pool_stride <- c("1*4") ## number of pool kernerls
+fullayer_num_hidden <- c(32,1)
+fullayer_act_type <- c("sigmoid")
+drop_float <- c(0.2,0.1,0.05)
+cnnFrame <- list(conv_kernel =conv_kernel,conv_num_filter = conv_num_filter,
+                 conv_stride = conv_stride,pool_act_type = pool_act_type,
+                 pool_type = pool_type,pool_kernel =pool_kernel,
+                 pool_stride = pool_stride,fullayer_num_hidden= fullayer_num_hidden,
+                 fullayer_act_type = fullayer_act_type,drop_float = drop_float)
+
+markerImage = paste0("1*",ncol(trainMat))
+```
+
+
+
+```{r}
+trainGSmodel <- train_deepGSModel(trainMat = trainMat,trainPheno = trainPheno,
+                validMat = validMat,validPheno = validPheno, markerImage = markerImage, 
+                cnnFrame = cnnFrame,device_type = "cpu",gpuNum = 4, eval_metric = "mae",
+                num_round = 1000,array_batch_size= 30,learning_rate = 0.01,
+                momentum = 0.5,wd = 0.00001, randomseeds = 0,initializer_idx = 0.01,
+                verbose = TRUE)
+```
+```{r}
+predscores <- predict_GSModel(GSModel = trainGSmodel,testMat = Markers[testIdx,],
+              markerImage = markerImage )
+```
+
+```{r}
+refer_value <- runif(56)
+pred_value <- sin(refer_value) + cos(refer_value)
+meanNDCG(realScores = refer_value,predScores = pred_value, topAlpha = 10)
+```
+
+
+```{r}
+
+refer_value <- y[testIdx,]
+pred_value <- predscores[1,]
+plot(meanNDCG(realScores = refer_value,predScores = pred_value, topAlpha = c(1:56)), main = "meanNDCG score", col = "red", xlab = "k value", ylab = "Normalized Pheno")
+```
+
+```{r}
+plot(refer_value, col = "red", main = "True and Predicted labels", xlab = "Normalized Pheno")
+points(pred_value, col = "blue")
+```
+
+```{r}
+
+plot(x = refer_value, y = pred_value)
+lm(pred_value ~ refer_value)
+summary(A)
+
+```
+

@@ -1,0 +1,186 @@
+---
+title: "DeepGS - Poplar Dataset"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+### Deep Learning pour la prédiction génomique des performances de nouvelles variétés de plante
+
+In the following we will apply the **DeepGS Convolutionnal Neural Network** (CNN) to predict the phenotypic values of poplar individuals given a set of genomic markers. 
+The DeepGS network is an open source project, designed by a team of the Northwest A&F University, Yangling, Shaanxi, China, led by Welong Ma and Zhixu Giu. 
+
+For more info about the DeepGS network, please refer to the following publication : *DeepGS: Predicting phenotypes from genotypes using Deep Learning (Wenlong Ma et al. 2017)*.
+
+We upload the needed libraries. 
+In particular, the installation of DeepGS and mxnet libraries can be done following the Readme document of the DeepGS open source project : https://github.com/cma2015/DeepGS
+
+```{r}
+rm(list=ls())
+library(DeepGS)  
+library(mxnet)
+library(readr)
+library(dplyr)
+```
+
+### Presentation of the Poplar Dataset : 
+
+We have **562 samples**, each representing a poplar individual. For each of those individuals, the input data is composed of a large number of genomic markers. A marker is a couple of letters ("A/T" for example) linked to a known position in the Poplar genome (ex : SNP_IGA_1_3127827).
+
+The output data is composed of 8 phenotypic values, 5 of them being scalar values and 3 of them being values.
+
+*Genomic Markers csv shape = (563,7809)*
+
+*Phenotypic Values csv shape = (563,8)*
+
+```{r}
+setwd("/Users/adil/documents/GitHub/DeepGS")
+Data_Geno<- read.csv(file = "Poplar.Geno.csv", header = FALSE, sep = ",", quote = "\"",dec = ".", fill = TRUE, comment.char = "") 
+print(Data_Geno)
+
+Data_Pheno <- read.csv(file = "Poplar.Pheno.csv", header = FALSE, sep = ",", quote = "\"",dec = ".", fill = TRUE, comment.char = "") 
+print(Data_Pheno)
+```
+
+
+### Features Extraction : 
+
+The genome is written thanks to 4 letters A, T, G, C. Thus, we have 16 possible combinations for our two-bases markers : A/A, A/T, A/G, A/C, etc.
+We though about two options to represent the Markers data :  
+
+    - The first one being encoding each pair thanks to a scalar value from 1 to 16 : "A/A" = 1, "A/T" = 2, etc.  
+    - The second one being encoding each pair thanks to a binary 16D-Vector : "A/A" = (1,0...,0), "A/T" =            (0,1,0...0)
+
+The DeepGS libreary we are using only offer the possibility of training the CNN on a 2D-Matrix, and not a 3D-Tensor. Thus, the following document will use the 1st encoding option. The next steps of the projet will consider the 2nd option, which we think should give better results.
+
+We import an external script, "Input-Encoding-function-from-1-to-16.R" implementing the described feature extraction.
+
+
+```{r}
+setwd("/Users/adil/documents/GitHub/DeepGS")
+source("Input-Encoding-function-from-1-to-16.R")
+
+Markers <- Data_Input_extraction("Poplar.Geno.csv")
+y <- Data_Output_extraction("Poplar.Pheno.csv",2)
+
+dim(Markers)
+dim(y)
+```
+  
+### Dividing the dataset into a training set, testing set and validation set : 
+
+
+```{r}
+cvSampleList <- cvSampleIndex(length(y),10,1)
+
+# cross validation set
+cvIdx <- 1
+trainIdx <- cvSampleList[[cvIdx]]$trainIdx
+testIdx <- cvSampleList[[cvIdx]]$testIdx
+
+trainMat <- Markers[trainIdx,]
+trainPheno <- y[trainIdx]
+
+validIdx <- sample(1:length(trainIdx),floor(length(trainIdx)*0.1))
+
+validMat <- trainMat[validIdx,]
+validPheno <- trainPheno[validIdx]
+
+trainMat <- trainMat[-validIdx,]
+trainPheno <- trainPheno[-validIdx]
+```
+
+### Designing the CNN : 
+
+We used the network structure initially suggested by the authors. Further tuning of the parameters is to be conducted.
+
+```{r}
+conv_kernel <- c("1*18") ## convolution kernels (fileter shape)
+conv_stride <- c("1*1")
+conv_num_filter <- c(8)  ## number of filters
+pool_act_type <- c("relu") ## active function for next pool
+pool_type <- c("max") ## max pooling shape
+pool_kernel <- c("1*4") ## pooling shape
+pool_stride <- c("1*4") ## number of pool kernerls
+fullayer_num_hidden <- c(32,1)
+fullayer_act_type <- c("sigmoid")
+drop_float <- c(0.2,0.1,0.05)
+
+cnnFrame <- list(conv_kernel =conv_kernel,conv_num_filter = conv_num_filter,
+                 conv_stride = conv_stride,pool_act_type = pool_act_type,
+                 pool_type = pool_type,pool_kernel =pool_kernel,
+                 pool_stride = pool_stride,fullayer_num_hidden= fullayer_num_hidden,
+                 fullayer_act_type = fullayer_act_type,drop_float = drop_float)
+
+
+markerImage = paste0("1*",ncol(trainMat))
+```
+
+### Training the CNN : 
+
+We conducted a hyperparameters tuning, especially regarding the momentum, the learning_rate and the weight decay (wd here). Indeed, those parameters allow to explore a vaster portion of the hyperspace, avoiding blockage in a non-optiam valley of our optimization space. 
+
+Note that an early stoping mechanism is implemented : if more than 600 epochs have non-favorable metric evolution, then the training is stopped to avoid overfitting. 
+
+```{r}
+trainGSmodel <- train_deepGSModel(trainMat = trainMat,trainPheno = trainPheno,
+                validMat = validMat,validPheno = validPheno, markerImage = markerImage, 
+                cnnFrame = cnnFrame, device_type = "cpu", gpuNum = 1, eval_metric = "mae",
+                num_round = 6000, array_batch_size= 30, learning_rate = 0.01,
+                momentum = 0.8, wd = 0.00001, randomseeds = 0,initializer_idx = 0.01,
+                verbose = TRUE)
+```
+
+### Evaluation metric : the mean nDCG score 
+
+nDCG stands for **Normalized Discounted Cumulative Gain**.  
+
+Discounted cumulative gain (DCG) is a measure of ranking quality. In information retrieval, it is often used to measure effectiveness of web search engine algorithms or related applications. Using a graded relevance scale of documents in a search-engine result set, DCG measures the usefulness, or gain, of a document based on its position in the result list. The gain is accumulated from the top of the result list to the bottom, with the gain of each result discounted at lower ranks.  
+
+Search result lists vary in length depending on the query. Comparing a search engine's performance from one query to the next cannot be consistently achieved using DCG alone, so the cumulative gain at each position for a chosen value of p should be normalized across queries. This is done by sorting all relevant documents in the corpus by their relative relevance, producing the maximum possible DCG through position p, also called Ideal DCG (IDCG) through that position. For a query, the normalized discounted cumulative gain, or nDCG, is computed as : 
+
+**nDCG_p = DCG_p / IDCG_p**
+
+where IDCG is ideal discounted cumulative gain. All nDCG calculations are then relative values on the interval 0.0 to 1.0 and so are cross-query comparable.
+
+### Predicting a Phenotypic value :  HT.ORL
+
+
+```{r}
+predscores <- predict_GSModel(GSModel = trainGSmodel,testMat = Markers[testIdx,],
+              markerImage = markerImage )
+```
+
+### meanNDCG on the predicted data (HT.ORL)
+
+Our test set have 56 samples.
+We plot the mean NDCG score as a function of the k value. Intuitively, we understand that the mean NDCG score evaluate two things : the capacity of the algorithm to predict the best individuals, and its capacity to order those individuals 
+
+Bellow, if k = 10, it means that we ask the network to give, as an output, the 10 best predicted individuals and to sort them. That explains, for example, why the score isn't equal to 1 for k = 56 (size of the test set), as there is this notion of giving the right sorting.
+
+
+```{r}
+refer_value <- y[testIdx,]
+pred_value <- predscores[1,]
+plot(meanNDCG(realScores = refer_value,predScores = pred_value, topAlpha = c(1:56)), main = "meanNDCG score", col = "red", xlab = "k value", ylab = "meanNDCG")
+```
+
+### Correlation between the predicted and real values (HT.ORL)
+
+
+
+```{r}
+linear_reg = lm(pred_value ~ refer_value)
+summary(linear_reg)
+```
+
+```{r}
+plot(x = refer_value, y = pred_value, col = "blue", xlab = "True labels", ylab = "Predicted labels", main = "R2 = 0.25")
+abline(a = 0.11322, b = 0.32130, col = "red")
+```
+
+The value of our R2 is quite low, at 0.25. 
+We already obtained, during a previous experience, a R2 score of 0.56. 
+We didn't succeed in reproducing the past results, and don't understand yet why we are not able to obtain the same result. We included, with the notebook, the graphs of our best experience, for which we had an R2 of 0.56. 
+

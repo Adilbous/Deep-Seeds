@@ -1,7 +1,7 @@
 # Deep-Seeds
 
 Deep Learning applied to the prediction of plant's phenotype given their genetic markers (Genomic Selection).<br>
-As of today, the industry uses a range of statistical and mathematical methods to predict plant varieties preformances and characteristics, such as BLUP-RR.<br> 
+As of today, the industry uses a range of statistical and mathematical methods to predict plant varieties preformances and characteristics, such as BLUP.<br> 
 This undergoing project aims to apply Deep Learning methods to Genomic Selection and to overperform current industry practices.
 
 ## Content 

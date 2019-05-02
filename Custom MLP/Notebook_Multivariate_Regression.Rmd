@@ -1,0 +1,130 @@
+---
+title: "Regression multivariée avec MLP"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r, echo = FALSE}
+rm(list=ls())
+```
+
+
+```{r}
+library(ggplot2)
+library(keras)
+source("encoding_functions.R")
+source("model_regression_multiple.R")
+source("plots.R")
+
+```
+
+
+## Utilisation d'un MLP pour la régression mulivariée
+
+Nous avons utilisé un réseau de type MLP afin de procéder à des régressions sur les paramètres phénotypiques quantitatifs, à savoir (HT.ORL,CIRC.ORL,BF.ORL,BS.ORL,BS.SAV)
+
+Nous présenterons ici le code utilisé sur ces cinq paramètres en même temps au sein d'une regression multivariée. 
+
+
+```{r}
+markers <- data_input("Poplar.Geno.csv")
+
+y_HT.ORL <- data_output_regression("Poplar.Pheno.csv",2)
+y_CIRC.ORL <- data_output_regression("Poplar.Pheno.csv",3)
+y_BF.ORL <- data_output_regression("Poplar.Pheno.csv",4)
+y_BS.ORL <- data_output_regression("Poplar.Pheno.csv",5)
+y_BS.SAV <- data_output_regression("Poplar.Pheno.csv",6)
+```
+
+
+## Régression mulivariée sur 5 variables
+
+Entrainement du réseau pour une regression multivariée sur les 5 paramètres avec un train/test split. 
+
+Il sera porté une attention particulière à la dernière couche de notre réseau qui est un layer_dense avec comme paramètre (units = 5) car nos données de sorties comportent 5 paramètres.
+
+```{r}
+y = cbind(y_BF.ORL, y_CIRC.ORL, y_HT.ORL, y_BS.ORL, y_BS.SAV)
+colnames(y) = c("BF.ORL", "CIRC.ORL", "HT.ORL", "BS.ORL", "BS.SAV")
+```
+
+
+```{r}
+results = regression_multiple(markers, y, k=8)
+```
+
+## Résultat sur la variable HT.ORL
+
+```{r}
+colnames(y_HT.ORL) = c("HT.ORL")
+plot_distribution(y_HT.ORL)
+```
+
+```{r}
+summary(results$reg1)
+```
+
+```{r}
+plot_regression(results$reg1)
+```
+
+## Résultat sur la variable CIRC.ORL
+
+```{r}
+colnames(y_HT.ORL) = c("CIRC.ORL")
+plot_distribution(y_CIRC.ORL)
+```
+
+```{r}
+summary(results$reg2)
+```
+
+```{r}
+plot_regression(results$reg2)
+```
+
+## Résultat sur la variable BF.ORL
+
+```{r}
+colnames(y_HT.ORL) = c("BF.ORL")
+plot_distribution(y_BF.ORL)
+```
+
+```{r}
+print(summary(results$reg3))
+```
+
+```{r}
+plot_regression(results$reg3)
+```
+
+## Résultat sur la variable BS.ORL
+
+```{r}
+colnames(y_HT.ORL) = c("BS.ORL")
+plot_distribution(y_BS.ORL)
+```
+
+```{r}
+print(summary(results$reg4))
+```
+
+```{r}
+plot_regression(results$reg4)
+```
+## Résultat sur la variable BS.SAV
+
+```{r}
+plot_distribution(y_BS.SAV)
+colnames(y_HT.ORL) = c("BS.SAV")
+```
+
+```{r}
+print(summary(results$reg5))
+```
+
+```{r}
+plot_regression(results$reg5)
+```

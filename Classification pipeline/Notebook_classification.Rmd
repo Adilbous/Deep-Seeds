@@ -1,0 +1,351 @@
+---
+title: "Notebook Classification"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, echo = FALSE}
+rm(list=ls())
+```
+
+
+```{r, echo = FALSE}
+library(readr)
+#library(dplyr)
+library(pls)
+library('e1071')
+library(keras)
+library(MLmetrics)
+library('DMwR')
+
+
+setwd("/Users/adil/Desktop/OBT/Projet option/Script")
+source("encoding_functions.R")
+```
+
+# Feature exctraction
+
+## Extraction des données
+
+On va chercher à prédire la classe "CIRC.SAV", qui, dans nos données initiales, comporte 5 classes : Very low, Low, Medium, High, Very high. Pour réduire le class imbalance (la classe Medium est largement majoritaire) on choisit de regrouper les classes Low et Very low ainsi que High et Very high.
+
+```{r}
+# Ici les marqueurs sont encodés en scalaire (de 1 à 16)
+markers = data_input("Poplar.Geno.csv", one.hot = FALSE)
+
+circ_sav = data_output_class("Poplar.pheno.csv", 7)
+```
+
+## Analyse en Composantes Principales 
+
+On peut visualiser nos données, qui sont de grandes dimensions, grâce à une ACP (Analyse en Composantes Principales). On constate que la séparation entre les classes Low et Medium est mauvaise. Cela explique nos premiers résultats et le fait que nos classifieurs CNN ne distinguaient pas ces deux classes.
+
+```{r}
+ACP = prcomp(as.data.frame(markers))
+ACP = ACP$x
+
+plot(ACP[,1:2], col = (circ_sav+1), main = "Analyse en Composantes Principales")
+legend("bottomleft", c("Low", "Medium", "High"), pch = 1, col = c(1,2,3) , title ="True label")
+```
+
+## ACP supervisée - Régression PLS
+
+On réalise une régression PLS (Partial Least Square) sur notre train set. On cherche donc à réaliser une ACP supervisée, avec pour objectif de maximiser la covariance entre nos données X et une variable y, ici celle que l'on cherche à prédire : circ_sav. 
+
+On obtient ainsi une projection de données dans un espace qui maximise la variance des individus selon y. L'objectif est de séparer distinctement nos classes, pour faciliter la tache du classifier par la suite. 
+
+Une fois cet espace de projection déterminé, on pourra y projeter nos données test avant de les classifier.
+
+
+### Shuffle du dataset 
+
+On mélange aléatoirement le dataset pour éviter un biais de l'entrainement et/ou du test de nos modèles. On extrait également trois variables phénotypiques (HT.ORL, CIRC.ORL et BR.ORL) qui vous nous servir de variables additionnelles contenant des informations d'intêret à propos des observations (cf régression PLS). 
+
+```{r}
+# Shuffle du dataset 
+shuffle_indices = sample(1:dim(markers)[1])
+
+markers = markers[shuffle_indices, ]
+circ_sav = circ_sav[shuffle_indices]
+
+# Variables additionnelles
+y_HT.ORL <- data_output_regression("Poplar.Pheno.csv",2)
+y_CIRC.ORL <- data_output_regression("Poplar.Pheno.csv",3)
+y_BF.ORL <- data_output_regression("Poplar.Pheno.csv",4)
+
+y_add = cbind(y_BF.ORL,y_CIRC.ORL)
+y_add = cbind(y_add,y_HT.ORL)
+```
+
+### Train-test split
+
+```{r}
+# Nombre d'individus à inclure dans le train set
+train_size = 450
+
+train_indices = sample(1:train_size)
+
+train_circ_sav = circ_sav[train_indices]
+train_markers = markers[train_indices, ]
+train_y_add = y_add[train_indices,]
+
+test_circ_sav = circ_sav[-train_indices]
+test_markers = as.matrix(markers[-train_indices, ])
+```
+
+### Régression PLS
+
+```{r}
+cppls = cppls(formula = train_circ_sav ~ train_markers, ncomp = 10, Y.add = train_y_add,
+               validation = "CV")
+```
+
+On détermine le nombre de composantes de notre espace de projection par cross-validation. On cherche à minimiser la MSE ajustée. 
+
+```{r}
+MSEP = MSEP(cppls)
+# Sur le plot, en noir la MSE, en rouge la MSE ajustée
+plot(MSEP)
+
+# Nombre de composantes de notre espace de projection que l'on retient
+ncomp = which.min(MSEP$val[2,,])
+```
+
+Cette représentation de nos données dans l'espace déterminée par régression PLS est satisfaisante dans la mesure où elle remplit l'objectif initial : séparer plus distinctement les classes. On devine des frontières de décision qui pourraient être linéaires sur la représentation des 2 premières composantes.  
+
+```{r}
+plot(cppls$scores, col = (train_circ_sav + 1), main = "Régression PLS / circ_sav")
+
+legend("topleft", c("Low", "Medium", "High"), pch = 1, col = c(1,2,3) , title ="True label")
+```
+
+### Projection des données 
+
+On projete nos données de test dans l'espace de projection déterminé precedemment. 
+
+```{r}
+# On construit les train et test set pour l'entrainement des modèles de classification 
+
+# Pour le train set, cela consiste à ne garder que les composantes sélectionnées par cross-validation
+train_x = cppls$scores[,1:ncomp]
+train_y = train_circ_sav
+
+train_dat = data.frame( train_x, train_y =as.factor(train_y) )
+
+
+# Pour le test set, cela conssite à projeter nos données de marqueurs encodés sur l'espace de projection
+test_x = test_markers %*% (cppls$loading.weights[,1:ncomp])
+test_y = test_circ_sav
+
+test_x = as.data.frame(test_x)
+colnames(test_x) = colnames(train_dat)[1:ncomp]
+
+test_dat = data.frame( test_x, test_y = as.factor(test_y))
+
+# On renomme les dernières colonnes de nos train et test set pour s'assurer de la consistence des noms
+colnames(train_dat)[length(colnames(train_dat))] = "y"
+colnames(test_dat)[length(colnames(test_dat))] = "y"
+```
+
+# Classification
+
+On va chercher à comparer 3 méthodes de classification sur nos données projetées : SVM, KNN et Réseaux de neuronnes. 
+
+## SVM
+
+### Training SVM
+
+```{r}
+# On utilise une fonction qui otpimise les paramètres du SVM par grid search
+tune.out <- tune(svm, y~., data = train_dat, kernel = "linear", sclare = FALSE,
+                 ranges = list(cost = c(0.01, 0.1, 1, 5, 10), gamma = c(0, 0.1, 0.5, 1)), class.weights = 100 / table(train_y))
+
+# Le meilleur modèle identifié par grid search est enregistré
+svm.bestmodel <- tune.out$best.model
+print(svm.bestmodel)
+
+#, degree = c(1,2,3,4), gamma = c(0.01, 0.05, 0.1,0.2, 0.3, 0.4), coef.0 = c(0, 0.01, 0.05, 0.1, 0.2, 0.3) 
+```
+
+Un plot de la classification par SVM nous permet de visualiser les frontières de décision. 
+
+```{r}
+plot(svm.bestmodel, train_dat, formula = Comp.1 ~ Comp.2)
+```
+
+
+### Prediction SVM
+
+```{r}
+svm.pred = predict(svm.bestmodel, test_x , type = 'class')
+```
+
+### Accuracy et Matrice de confusion SVM
+
+```{r}
+svm.acc = Accuracy(svm.pred, test_y)
+print(svm.acc)
+```
+
+```{r}
+svm.matrix = ConfusionMatrix(svm.pred, test_y)
+print(svm.matrix)
+```
+
+### Plot prédiction SVM
+
+```{r}
+plot(test_x[,1:2], col = (as.numeric(levels(svm.pred))[svm.pred]+1) , pch = test_y, main = "SVM prediction" )
+
+legend("topleft", c("Low", "Medium", "High"), pch = c(0,1,2), title ="True label")
+legend("topright", c("Low", "Medium", "High"), col = c(1,2,3), pch = 4, title ="Predicted label")
+legend("bottomleft", toString(round(svm.acc,2)), title = "Accuracy")
+```
+
+
+## KNN
+
+On fixe à 3 le nombre de clusters à former, étant donné que l'on veut identifier nos 3 classes : Low, Medium et High.
+
+```{r}
+knn.pred = kNN(y ~ .,train_dat, test_dat, norm=FALSE, k=5)
+```
+
+### Accuracy et Matrice de confusion KNN
+
+```{r}
+knn.acc = Accuracy(knn.pred, test_y)
+print(knn.acc)
+```
+
+```{r}
+knn.matrix = ConfusionMatrix(knn.pred, test_y)
+print(knn.matrix)
+```
+
+### Plot prédiction KNN
+
+```{r}
+plot(test_x[,1:2], col = (as.numeric(levels(knn.pred))[knn.pred]+1), pch = test_y, main = "KNN prediction" )
+
+legend("topleft", c("Low", "Medium", "High"), pch = c(0,1,2), title ="True label")
+legend("topright", c("Low", "Medium", "High"), col = c(1,2,3), pch = 4, title ="Predicted label")
+legend("bottomleft", toString(round(knn.acc,2)), title = "Accuracy")
+
+```
+
+## MLP
+
+### Fonction d'instanciation du modèle
+
+```{r}
+build_model <-function(){
+  model <- keras_model_sequential() %>%
+    
+    layer_dense(units = 8, activation = "relu",input_shape = c(ncomp))%>%
+    
+    layer_dropout(rate = 0.2) %>%
+    
+    layer_dense(units = 8, activation = "relu", 
+                kernel_regularizer =  regularizer_l2(l = 0.02)) %>%
+    
+    layer_dense(units = 3, activation = "softmax")
+  
+  model %>% compile(
+    optimizer = "adam",
+    loss = 'categorical_crossentropy',
+    metrics = c("accuracy")
+  )
+}
+```
+
+
+### k-fold training du modèle
+
+```{r}
+# Nombre de folds
+k <- 4
+
+indices <- sample(1:nrow(train_markers))
+folds <- cut(indices, breaks = k, labels = FALSE)
+
+# Conversion des labels scalaires du train set en labels one-hot encodés
+train_y_ohe = to_categorical(train_y)
+test_y_ohe = to_categorical(test_y)
+
+# Nombre d'épochs d'entrainement
+num_epochs <- 15
+all_scores <- c()
+
+# Matrices où l'on stockera les prédictions
+predicted_y_matrix <- matrix( data = c(0,0,0), nrow = 3, ncol = dim(test_y_ohe)[1])
+average_predicted_y = array( data = c(0,0,0), dim = dim(test_y_ohe)[1])
+
+# Execution des k-folds
+for (i in 1:k) {
+  cat("processing fold #", i, "\n")
+  
+  # Tirage des échantillons de validation
+  val_indices <- which(folds == i, arr.ind = TRUE)
+  val_data <- train_x[val_indices, ]
+  val_targets <- train_y_ohe[val_indices, ]
+  
+  # Extraction des échantillons de train
+  partial_train_data <- train_x[-val_indices, ]
+  partial_train_targets <- train_y_ohe[-val_indices, ]
+  
+  # Entrainement
+  model <- build_model()
+  model %>% fit(partial_train_data, partial_train_targets,
+                epochs = num_epochs, batch_size = 32, verbose = 1)
+  
+  results <- model %>% evaluate(val_data, val_targets, verbose = 1)
+  
+  all_scores <- c(all_scores, results$acc)
+
+  # Prédiction sur le test-set
+  predicted_y <- model %>% predict(as.matrix(test_x))
+  predicted_y_matrix = predicted_y_matrix + t(predicted_y)
+}
+
+
+# On convertit les résultats renvoyés en one-hot en scalaire 
+scalar_pred_y = matrix( data = c(0), nrow = dim(predicted_y_matrix)[1], ncol = 1)
+
+for (i in 1:dim(predicted_y)[1]){
+  scalar_pred_y[i] = (which.max(predicted_y_matrix[,i])-1)
+}
+```
+
+### Accuracy et Matrice de confusion MLP
+
+```{r}
+mlp.acc = Accuracy(scalar_pred_y, test_y)
+print(mlp.acc)
+```
+
+```{r}
+mlp.matrix = ConfusionMatrix(scalar_pred_y, test_y)
+print(mlp.matrix)
+```
+
+### Plot prédiction MLP
+
+
+```{r}
+plot(test_x[,1:2], col = (scalar_pred_y+1), pch = test_y, main = "MLP prediction" )
+
+legend("topleft", c("Low", "Medium", "High"), pch = c(0,1,2), title ="True label")
+legend("topright", c("Low", "Medium", "High"), col = c(1,2,3), pch = 4, title ="Predicted label")
+legend("bottomleft", toString(round(mlp.acc,2)), title = "Accuracy")
+```
+
+
+
+
+
+
+
+
+
